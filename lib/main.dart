@@ -1,11 +1,16 @@
 import 'package:ar_flutter_plugin/ar_flutter_plugin.dart';
+import 'package:ar_flutter_plugin/datatypes/config_planedetection.dart';
+import 'package:ar_flutter_plugin/datatypes/hittest_result_types.dart';
 import 'package:ar_flutter_plugin/datatypes/node_types.dart';
 import 'package:ar_flutter_plugin/managers/ar_anchor_manager.dart';
 import 'package:ar_flutter_plugin/managers/ar_location_manager.dart';
 import 'package:ar_flutter_plugin/managers/ar_object_manager.dart';
 import 'package:ar_flutter_plugin/managers/ar_session_manager.dart';
+import 'package:ar_flutter_plugin/models/ar_anchor.dart';
+import 'package:ar_flutter_plugin/models/ar_hittest_result.dart';
 import 'package:ar_flutter_plugin/models/ar_node.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_ar/ar_object.dart';
 import 'package:vector_math/vector_math_64.dart' as vector_math;
 
 void main() {
@@ -15,6 +20,7 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
+  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -38,97 +44,41 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  ARSessionManager? _arSessionManager;
-  ARObjectManager? _arObjectManager;
+  ARSessionManager? arSessionManager;
+  ARObjectManager? arObjectManager;
+  ARAnchorManager? arAnchorManager;
 
-  // Variables for preview mode
-  bool isPlacingModel = false;
-  vector_math.Vector3 previewPosition = vector_math.Vector3(0.0, 0.0, -1.0);
-  vector_math.Vector3 previewScale = vector_math.Vector3(0.5, 0.5, 0.5);
-  double previewRotationY = 0.0;
+  List<ARNode> nodes = [];
+  List<ARAnchor> anchors = [];
 
   @override
   void dispose() {
-    _arSessionManager?.dispose();
     super.dispose();
+    arSessionManager!.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text(widget.title),
+        title: const Text('Object Transformation Gestures'),
       ),
       body: Stack(
         children: [
           ARView(
             onARViewCreated: onARViewCreated,
+            planeDetectionConfig: PlaneDetectionConfig.horizontalAndVertical,
           ),
-          if (isPlacingModel)
-            Positioned.fill(
-              child: GestureDetector(
-                onPanUpdate: (details) {
-                  setState(() {
-                    previewPosition.x += details.delta.dx * 0.001; // Adjust movement scale
-                    previewPosition.y -= details.delta.dy * 0.001;
-                  });
-                },
-                onScaleUpdate: (details) {
-                  setState(() {
-                    previewScale *= details.scale;
-                  });
-                },
-                onHorizontalDragUpdate: (details) {
-                  setState(() {
-                    previewRotationY += details.delta.dx * 0.5; // Adjust rotation sensitivity
-                  });
-                },
-              ),
-            ),
           Align(
-            alignment: Alignment.bottomCenter,
-            child: Container(
-              margin: const EdgeInsets.all(16.0),
-              child: isPlacingModel
-                  ? Row(
+            alignment: FractionalOffset.bottomCenter,
+            child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  FloatingActionButton.extended(
-                    onPressed: _placeModel,
-                    backgroundColor: Colors.green,
-                    label: const Text(
-                      "Place Model",
-                      style: TextStyle(color: Colors.white),
-                    ),
-                    icon: const Icon(Icons.check, color: Colors.white),
-                  ),
-                  FloatingActionButton.extended(
-                    onPressed: () {
-                      setState(() {
-                        isPlacingModel = false;
-                      });
-                    },
-                    backgroundColor: Colors.red,
-                    label: const Text(
-                      "Cancel",
-                      style: TextStyle(color: Colors.white),
-                    ),
-                    icon: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ],
-              )
-                  : FloatingActionButton.extended(
-                onPressed: _startPlacingModel,
-                backgroundColor: Colors.deepPurple,
-                label: const Text(
-                  "Add 3D Model",
-                  style: TextStyle(color: Colors.white),
-                ),
-                icon: const Icon(Icons.add, color: Colors.white),
-              ),
-            ),
-          ),
+                  ElevatedButton(
+                      onPressed: onRemoveEverything,
+                      child: const Text("Remove Everything")),
+                ]),
+          )
         ],
       ),
     );
@@ -139,45 +89,107 @@ class _MyHomePageState extends State<MyHomePage> {
       ARObjectManager arObjectManager,
       ARAnchorManager arAnchorManager,
       ARLocationManager arLocationManager) {
-    _arSessionManager = arSessionManager;
-    _arObjectManager = arObjectManager;
+    this.arSessionManager = arSessionManager;
+    this.arObjectManager = arObjectManager;
+    this.arAnchorManager = arAnchorManager;
 
-    _arSessionManager?.onInitialize(
+    this.arSessionManager!.onInitialize(
       showFeaturePoints: false,
       showPlanes: true,
+      // customPlaneTexturePath: "Images/triangle.png",
       showWorldOrigin: true,
+      handlePans: true,
+      handleRotation: true,
     );
-    _arObjectManager?.onInitialize();
+    this.arObjectManager!.onInitialize();
+
+    this.arSessionManager!.onPlaneOrPointTap = onPlaneOrPointTapped;
+    this.arObjectManager!.onPanStart = onPanStarted;
+    this.arObjectManager!.onPanChange = onPanChanged;
+    this.arObjectManager!.onPanEnd = onPanEnded;
+    this.arObjectManager!.onRotationStart = onRotationStarted;
+    this.arObjectManager!.onRotationChange = onRotationChanged;
+    this.arObjectManager!.onRotationEnd = onRotationEnded;
   }
 
-  void _startPlacingModel() {
-    setState(() {
-      isPlacingModel = true;
+  Future<void> onRemoveEverything() async {
+    /*nodes.forEach((node) {
+      this.arObjectManager.removeNode(node);
+    });*/
+    anchors.forEach((anchor) {
+      this.arAnchorManager!.removeAnchor(anchor);
     });
+    anchors = [];
   }
 
-  void _placeModel() async {
-    final newNode = ARNode(
-      type: NodeType.localGLTF2,
-      uri: "path/to/your/model.gltf", // Update with your model path
-      scale: previewScale,
-      position: previewPosition,
-      rotation: vector_math.Vector4(0, 1, 0, previewRotationY), // Rotation in Y axis
-    );
-
-    bool? didAddNode = await _arObjectManager?.addNode(newNode);
-    if (didAddNode != null && didAddNode) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Model added successfully!")),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Failed to add model.")),
-      );
+  Future<void> onPlaneOrPointTapped(
+      List<ARHitTestResult> hitTestResults) async {
+    var singleHitTestResult = hitTestResults.firstWhere(
+            (hitTestResult) => hitTestResult.type == ARHitTestResultType.plane);
+    if (singleHitTestResult != null) {
+      var newAnchor =
+      ARPlaneAnchor(transformation: singleHitTestResult.worldTransform);
+      bool? didAddAnchor = await this.arAnchorManager!.addAnchor(newAnchor);
+      if (didAddAnchor!) {
+        this.anchors.add(newAnchor);
+        // Add note to anchor
+        var newNode = ARNode(
+            type: NodeType.webGLB,
+            uri:
+            "https://github.com/KhronosGroup/glTF-Sample-Models/raw/master/2.0/Duck/glTF-Binary/Duck.glb",
+            scale: vector_math.Vector3(0.2, 0.2, 0.2),
+            position: vector_math.Vector3(0.0, 0.0, 0.0),
+            rotation: vector_math.Vector4(1.0, 0.0, 0.0, 0.0));
+        bool? didAddNodeToAnchor =
+        await this.arObjectManager!.addNode(newNode, planeAnchor: newAnchor);
+        if (didAddNodeToAnchor!) {
+          this.nodes.add(newNode);
+        } else {
+          this.arSessionManager!.onError("Adding Node to Anchor failed");
+        }
+      } else {
+        this.arSessionManager!.onError("Adding Anchor failed");
+      }
     }
+  }
 
-    setState(() {
-      isPlacingModel = false;
-    });
+  onPanStarted(String nodeName) {
+    print("Started panning node " + nodeName);
+  }
+
+  onPanChanged(String nodeName) {
+    print("Continued panning node " + nodeName);
+  }
+
+  onPanEnded(String nodeName, Matrix4 newTransform) {
+    print("Ended panning node " + nodeName);
+    final pannedNode =
+    this.nodes.firstWhere((element) => element.name == nodeName);
+
+    /*
+    * Uncomment the following command if you want to keep the transformations of the Flutter representations of the nodes up to date
+    * (e.g. if you intend to share the nodes through the cloud)
+    */
+    //pannedNode.transform = newTransform;
+  }
+
+  onRotationStarted(String nodeName) {
+    print("Started rotating node " + nodeName);
+  }
+
+  onRotationChanged(String nodeName) {
+    print("Continued rotating node " + nodeName);
+  }
+
+  onRotationEnded(String nodeName, Matrix4 newTransform) {
+    print("Ended rotating node " + nodeName);
+    final rotatedNode =
+    this.nodes.firstWhere((element) => element.name == nodeName);
+
+    /*
+    * Uncomment the following command if you want to keep the transformations of the Flutter representations of the nodes up to date
+    * (e.g. if you intend to share the nodes through the cloud)
+    */
+    //rotatedNode.transform = newTransform;
   }
 }
